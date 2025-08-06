@@ -1,83 +1,72 @@
-# Modified from https://github.com/NJU-PCALab/OpenVid-1M/blob/main/download_scripts/download_OpenVid.py
 import os
 import subprocess
 import argparse
+from huggingface_hub import HfApi
+from tqdm import tqdm
 
-def download_files(output_directory, download_pose):
-    RGB_zip_folder = os.path.join(output_directory, "RGB_download")
-    video_folder = os.path.join(output_directory, "rgb_format")
-    os.makedirs(RGB_zip_folder, exist_ok=True)
-    os.makedirs(video_folder, exist_ok=True)
+def list_remote_files(dataset_name="ZechengLi19/CSL-News"):
+    api = HfApi()
+    info = api.dataset_info(dataset_name, files_metadata=True)
+    return sorted([f.rfilename for f in info.siblings if f.rfilename.endswith(".zip")])
 
-    RGB_error_log_path = os.path.join(RGB_zip_folder, "download_log.txt")
-    
-    # Download RGB format
-    for i in range(1, 437):
-        url = f"https://huggingface.co/datasets/ZechengLi19/CSL-News/resolve/main/archive_{i:03d}.zip"
-        file_path = os.path.join(RGB_zip_folder, f"archive_{i}.zip")
-        if os.path.exists(file_path):
-            print(f"file {file_path} exits.")
-            continue
+def download_and_extract(remote_path, output_zip_folder, extracted_folder, force=False):
+    filename = os.path.basename(remote_path)
+    local_path = os.path.join(output_zip_folder, filename)
+    extract_path = os.path.join(extracted_folder, filename.replace(".zip", ""))
 
-        command = ["wget", "-O", file_path, url]
-        unzip_command = ["unzip", "-j", file_path, "-d", video_folder]
-        try:
-            subprocess.run(command, check=True)
-            print(f"file {url} saved to {file_path}")
-            subprocess.run(unzip_command, check=True)
-        except subprocess.CalledProcessError as e:
-            error_message = f"file {url} download failed: {e}\n"
-            print(error_message)
-            with open(RGB_error_log_path, "a") as error_log_file:
-                error_log_file.write(error_message)
-    
-    # Download pose format (Optional)
-    if download_pose:
-        pose_zip_folder = os.path.join(output_directory, "pose_download")
-        pose_folder = os.path.join(output_directory, "pose_format")
-        os.makedirs(pose_zip_folder, exist_ok=True)
-        os.makedirs(pose_folder, exist_ok=True)
+    if not force:
+        if os.path.exists(extract_path) and len(os.listdir(extract_path)) > 0:
+            print(f"[✓] Already extracted: {filename}")
+            return
 
-        pose_error_log_path = os.path.join(pose_zip_folder, "download_log.txt")
-        
-        for i in range(1, 47):
-            url = f"https://huggingface.co/datasets/ZechengLi19/CSL-News_pose/resolve/main/archive_{i:03d}.zip"
-            file_path = os.path.join(pose_zip_folder, f"archive_{i}.zip")
-            if os.path.exists(file_path):
-                print(f"file {file_path} exits.")
-                continue
+    # Download
+    url = f"https://huggingface.co/datasets/ZechengLi19/CSL-News/resolve/main/{remote_path}"
+    print(f"[↓] Downloading: {filename}")
+    result = subprocess.run(["wget", "-q", "-O", local_path, url])
+    if result.returncode != 0:
+        print(f"[✗] Failed to download: {filename}")
+        return
 
-            command = ["wget", "-O", file_path, url]
-            unzip_command = ["unzip", "-j", file_path, "-d", video_folder]
-            try:
-                subprocess.run(command, check=True)
-                print(f"file {url} saved to {file_path}")
-                subprocess.run(unzip_command, check=True)
-            except subprocess.CalledProcessError as e:
-                error_message = f"file {url} download failed: {e}\n"
-                print(error_message)
-                with open(pose_error_log_path, "a") as error_log_file:
-                    error_log_file.write(error_message)
-        
-    # download label
-    data_folder = os.path.join(output_directory, "data", "train")
-    os.makedirs(data_folder, exist_ok=True)
-    data_urls = [
-        "https://huggingface.co/datasets/ZechengLi19/CSL-News/resolve/main/data/train/CSL_News_Labels.json"
-    ]
-    for data_url in data_urls:
-        data_path = os.path.join(data_folder, os.path.basename(data_url))
-        command = ["wget", "-O", data_path, data_url]
-        subprocess.run(command, check=True)
+    # Remove existing extract dir to avoid partial contents
+    if os.path.exists(extract_path):
+        subprocess.run(["rm", "-rf", extract_path])
+    os.makedirs(extract_path, exist_ok=True)
 
-    # delete zip files
-    # delete_command = "rm -rf " + RGB_zip_folder
-    # os.system(delete_command)
+    # Extract
+    print(f"[⤵] Extracting: {filename}")
+    result = subprocess.run(["unzip", "-q", local_path, "-d", extract_path])
+    if result.returncode != 0:
+        print(f"[✗] Failed to extract: {filename}")
+        return
 
+    print(f"[✓] Done: {filename}")
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Process some parameters.')
-    parser.add_argument('--output_directory', type=str, help='Path to the dataset directory', default="/path/to/dataset")
-    parser.add_argument('--download_pose', action='store_true', help='Whether to download pose or not')
+def main(output_directory, restart_from):
+    output_zip_folder = os.path.join(output_directory, "RGB_download")
+    extracted_folder = os.path.join(output_directory, "rgb_format")
+    os.makedirs(output_zip_folder, exist_ok=True)
+    os.makedirs(extracted_folder, exist_ok=True)
+
+    print("[📡] Fetching file list from HuggingFace...")
+    all_files = list_remote_files()
+
+    # Locate start index
+    start_idx = next((i for i, f in enumerate(all_files) if f == restart_from), None)
+    if start_idx is None:
+        print(f"[!] Could not find '{restart_from}' in the list of archive files.")
+        return
+
+    files_to_process = all_files[start_idx:]
+
+    print(f"[🧾] {len(files_to_process)} files to process starting from {restart_from}.")
+    for i, zip_file in enumerate(tqdm(files_to_process)):
+        force = (i == 0)  # Force redownload for the first file only (archive_341.zip)
+        download_and_extract(zip_file, output_zip_folder, extracted_folder, force=force)
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--output_directory", required=True, help="Path to dataset/CSL_News")
+    parser.add_argument("--restart_from", required=True, help="Exact filename to restart from (e.g. archive_341.zip)")
     args = parser.parse_args()
-    download_files(args.output_directory, args.download_pose)
+    main(args.output_directory, args.restart_from)
+
