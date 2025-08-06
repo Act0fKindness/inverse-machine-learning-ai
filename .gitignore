@@ -1,19 +1,59 @@
+# Editor, Python, and OS junk
 *.swp
-__pycache__/**
+__pycache__/
+*.py[cod]
+*.so
+.DS_Store
+Thumbs.db
+
+# Output and cache
 out/
 core*
-*.ipynb
-# *.sh
-*.bin
-wandb
-demo/
-backup
-*.pth
-#*.txt
-out/
 log/
+*.log
+backup/
+*.bak
+
+# Jupyter notebooks
+*.ipynb
+.ipynb_checkpoints/
+
+# Data and large files
+*.bin
+*.pth
 *.json
 *.xlsx
 *.mp4
+*.avi
+*.mov
+*.zip
+
+# Datasets and outputs
+dataset/
+data/
+videos/
+renders/
+demo/
+wandb/
+backup/
+out/
+log/
+
+# Ignore checkpoints, experiment folders
+checkpoints/
+runs/
+logs/
+
+# Ignore results/outputs in tools
 tools/*.jpg
 tools/*.mp4
+
+# Ignore large submodules and nested git repos
+DeepSpeed/
+Uni-Sign/
+
+# Ignore shell scripts if not tracked
+#*.sh
+
+# DO NOT ignore text files (keep .txt in repo)
+
