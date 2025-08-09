@@ -9,5 +9,5 @@ while IFS== read -r pkg eq ver; do
   fi
   echo "Installing $pkg==$ver ..."
   pip install "$pkg==$ver"
-done < requirements.txt
+done < requirements-current.txt
 
