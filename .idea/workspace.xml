@@ -5,7 +5,6 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="0c3e19e7-a774-4810-bc63-903212e8feeb" name="Changes" comment="">
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/fine_tuning.py" beforeDir="false" afterPath="$PROJECT_DIR$/fine_tuning.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
@@ -79,7 +78,7 @@
       <workItem from="1754774491293" duration="31537000" />
       <workItem from="1755085820035" duration="6686000" />
       <workItem from="1755120297848" duration="5933000" />
-      <workItem from="1755526088204" duration="1217000" />
+      <workItem from="1755526088204" duration="1399000" />
     </task>
     <servers />
   </component>

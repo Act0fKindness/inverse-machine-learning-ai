@@ -88,33 +88,33 @@ def _split_single_pose_to_parts(tjc: np.ndarray) -> Dict[str, np.ndarray]:
         ("wholebody133", (23, 21, 21, 68)),
         ("compact69",    ( 9, 21, 21, 18)),
     ]
+
+    # Exact matches first
     for _, (b, l, r, f) in schemes:
         if b + l + r + f == J:
             idx = 0
-            parts = {
-                "body":     tjc[:, idx:idx+b, :]; idx += b,
-            "left":     tjc[:, idx:idx+l, :]; idx += l,
-            "right":    tjc[:, idx:idx+r, :]; idx += r,
-            "face_all": tjc[:, idx:idx+f, :],
-            }
-            return parts
+            body  = tjc[:, idx:idx + b, :]; idx += b
+            left  = tjc[:, idx:idx + l, :]; idx += l
+            right = tjc[:, idx:idx + r, :]; idx += r
+            face  = tjc[:, idx:idx + f, :]
+            return {"body": body, "left": left, "right": right, "face_all": face}
 
-    # Fallback: use common body+hands, remainder to face
+    # Fallback: common body+hands, remainder to face
     for b_try in (23, 9):
         l_try = r_try = 21
         if J >= b_try + l_try + r_try:
             idx = 0
-            body  = tjc[:, idx:idx+b_try, :]; idx += b_try
-            left  = tjc[:, idx:idx+l_try, :]; idx += l_try
-            right = tjc[:, idx:idx+r_try, :]; idx += r_try
+            body  = tjc[:, idx:idx + b_try, :]; idx += b_try
+            left  = tjc[:, idx:idx + l_try, :]; idx += l_try
+            right = tjc[:, idx:idx + r_try, :]; idx += r_try
             face  = tjc[:, idx:, :]
             return {"body": body, "left": left, "right": right, "face_all": face}
 
+    # If we get here, we couldn't split J cleanly
     raise RuntimeError(
         f"Cannot split J={J} joints into parts. "
         f"Expected 23+21+21+68 or 9+21+21+18; got {J}."
     )
-
 
 def _load_pose_parts(pkl_path: str) -> Dict[str, torch.Tensor]:
     """
