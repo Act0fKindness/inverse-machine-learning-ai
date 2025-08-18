@@ -1,15 +1,31 @@
-output_dir=out/stage2_pretraining
+#!/usr/bin/env bash
+set -euo pipefail
 
-ckpt_path=out/stage1_pretraining/best_checkpoint.pth
+ROOT="$HOME/projects/dev/inverse"
+cd "$ROOT"
 
-deepspeed --include localhost:0,1,2,3 --master_port 29511 pre_training.py \
-   --batch-size 4 \
-   --gradient-accumulation-steps 8 \
-   --epochs 5 \
-   --opt AdamW \
-   --lr 3e-4 \
-   --quick_break 2048 \
-   --output_dir $output_dir \
-   --finetune $ckpt_path \
-   --dataset CSL_News \
-   --rgb_support
+POSE_ROOT="$ROOT/data/WLBSL/pose_format"
+LABELS="$ROOT/data/WLBSL/WLBSL_Labels.csv"
+SAVE="$ROOT/checkpoints/wlbs_stage2_words"
+FINETUNE="${FINETUNE:-$ROOT/checkpoints/pretrain_wlbs/best.pt}"   # override if different
+mkdir -p "$SAVE"
+
+ARGS=(
+  --stage 2
+  --task ISLR
+  --dataset WLASL
+  --pose-root "$POSE_ROOT"
+  --labels    "$LABELS"
+  --save-dir  "$SAVE"
+  --device    cuda
+)
+
+if [[ -f "$FINETUNE" ]]; then
+  echo "Using finetune checkpoint: $FINETUNE"
+  ARGS+=(--finetune "$FINETUNE")
+else
+  echo "⚠️  FINETUNE not found at: $FINETUNE — training Stage-2 from scratch."
+fi
+
+PYTHONPATH="$ROOT:$PYTHONPATH" CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}" \
+python3 fine_tuning.py "${ARGS[@]}"

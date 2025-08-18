@@ -1,35 +1,36 @@
-mt5_path = "./pretrained_weight/mt5-base"
+from pathlib import Path
 
-# label paths
+# === Base directory for resolving relative paths ===
+BASE_DIR = Path(__file__).resolve().parent
+
+# === MT5 pretrained model path (absolute) ===
+mt5_path = str((BASE_DIR / "pretrained_weight" / "mt5-base").resolve())
+
+# === Label paths ===
 train_label_paths = {
-                    "CSL_News": "./data/CSL_News/CSL_News_Labels.json",
-                    "CSL_Daily": "./data/CSL_Daily/labels.train",
-                    "WLASL": "./data/WLASL/labels-2000.train"
-                    }
+    'CSL_News': str((BASE_DIR / 'data' / 'CSL_News' / 'CSL_News_Labels.json').resolve()),
+    'WLBSL': str((BASE_DIR / 'data' / 'WLBSL' / 'WLBSL_Labels.json').resolve())
+}
 
 dev_label_paths = {
-                    "CSL_News": "./data/CSL_News/CSL_News_Labels.json",
-                    "CSL_Daily": "./data/CSL_Daily/labels.dev",
-                    "WLASL": "./data/WLASL/labels-2000.dev"
-                    }
+    'CSL_News': str((BASE_DIR / 'data' / 'CSL_News' / 'CSL_News_Labels.json').resolve()),
+    'WLBSL': str((BASE_DIR / 'data' / 'WLBSL' / 'WLBSL_Labels.json').resolve())
+}
 
 test_label_paths = {
-                    "CSL_News": "./data/CSL_News/CSL_News_Labels.json",
-                    "CSL_Daily": "./data/CSL_Daily/labels.test",
-                    "WLASL": "./data/WLASL/labels-2000.test"
-                    }
+    'CSL_News': str((BASE_DIR / 'data' / 'CSL_News' / 'CSL_News_Labels.json').resolve()),
+    'WLBSL': str((BASE_DIR / 'data' / 'WLBSL' / 'WLBSL_Labels.json').resolve())
+}
 
-
-# video paths
+# === Video paths ===
 rgb_dirs = {
-            "CSL_News": './dataset/CSL_News/rgb_format',
-            "CSL_Daily": './dataset/CSL_Daily/sentence-crop',
-            "WLASL": "./dataset/WLASL/rgb_format"
-            }
+    'CSL_News': str((BASE_DIR / 'data' / 'CSL_News' / 'rgb_format').resolve()),
+    'WLBSL': str((BASE_DIR / 'data' / 'WLBSL' / 'rgb_format').resolve())
+}
 
-# pose paths
+# === Pose paths ===
 pose_dirs = {
-            "CSL_News": './dataset/CSL_News/pose_format',
-            "CSL_Daily": './dataset/CSL_Daily/pose_format',
-            "WLASL": "./dataset/WLASL/pose_format"
-            }
+    'CSL_News': str((BASE_DIR / 'data' / 'CSL_News' / 'pose_format').resolve()),
+    'WLBSL': str((BASE_DIR / 'data' / 'WLBSL' / 'pose_format').resolve())
+}
+
