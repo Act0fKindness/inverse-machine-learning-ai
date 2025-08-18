@@ -398,16 +398,6 @@ def train_one_epoch(args, model, data_loader, optimizer, epoch):
     for step, (src_input, tgt_input) in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
         src_input = _maybe_cast_and_move(src_input, target_dtype)
 
-        if getattr(args, "probe_shapes", False) and step == 0 and utils.is_main_process():
-            print("== Incoming src_input shapes ==")
-            for k, v in src_input.items():
-                if isinstance(v, torch.Tensor):
-                    print(f"  {k}: {tuple(v.shape)} {v.dtype} {v.device}", flush=True)
-            import torch.distributed as dist
-            if dist.is_available() and dist.is_initialized():
-                dist.destroy_process_group()
-            raise SystemExit(0)
-
         stack_out = model(src_input, tgt_input)
         total_loss = stack_out['loss']
 
