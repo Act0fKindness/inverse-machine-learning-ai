@@ -120,9 +120,19 @@ class WLBSL_ISLR_Dataset(Dataset):
         poses = [b["pose"] for b in src_list]
         lens  = torch.stack([b["pose_len"] for b in src_list], dim=0)
 
-        # Pad to [B, T, J, C]
+        # Pad to [B, T, J, C]. Some pose sources may include extra feature
+        # dimensions (e.g., confidence or depth channels).  Flatten any
+        # additional dims beyond the joint dimension so downstream code
+        # always receives a 4-D tensor.
         pad_pose = pad_sequence(poses, batch_first=True, padding_value=0.0)
-        B, max_len, J, C = pad_pose.shape
+        B, max_len = pad_pose.shape[:2]
+        feat_shape = pad_pose.shape[2:]
+        if len(feat_shape) == 1:
+            J, C = feat_shape[0], 1
+            pad_pose = pad_pose.unsqueeze(-1)
+        else:
+            J, C = feat_shape[0], int(np.prod(feat_shape[1:]))
+            pad_pose = pad_pose.reshape(B, max_len, J, C)
 
         # Split joints into body/hand/face parts assuming fixed ordering
         idx = 0
