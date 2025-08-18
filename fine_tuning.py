@@ -119,13 +119,24 @@ class WLBSL_ISLR_Dataset(Dataset):
         src_list, tgt_list = zip(*batch)
         poses = [b["pose"] for b in src_list]
         lens  = torch.stack([b["pose_len"] for b in src_list], dim=0)
-        flat  = [p.reshape(p.shape[0], -1) for p in poses]              # [T, J*C]
-        pad_flat = pad_sequence(flat, batch_first=True, padding_value=0.0)  # [B, T, J*C]
+
+        # Pad to [B, T, J, C]
+        pad_pose = pad_sequence(poses, batch_first=True, padding_value=0.0)
+        B, max_len, J, C = pad_pose.shape
+
+        # Split joints into body/hand/face parts assuming fixed ordering
+        idx = 0
+        parts = {}
+        for name, n in [("body", 9), ("left", 21), ("right", 21), ("face_all", 18)]:
+            parts[name] = pad_pose[:, :, idx:idx + n, :]
+            idx += n
+
+        # Attention mask for valid timesteps
+        mask = torch.arange(max_len).expand(B, max_len) < lens.unsqueeze(1)
+
         src_input = {
-            "pose": pad_flat,
-            "pose_len": lens,
-            "max_len": torch.tensor(pad_flat.shape[1]).long(),
-            "jc": torch.tensor(pad_flat.shape[2]).long(),
+            **parts,
+            "attention_mask": mask.long(),
         }
         tgt_input = {"gt_sentence": [b["gt_sentence"] for b in tgt_list]}
         return src_input, tgt_input
