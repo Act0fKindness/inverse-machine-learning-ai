@@ -321,16 +321,15 @@ def build_wlbls_loaders(args):
 
 
 def _maybe_cast_and_move(src_input: Dict[str, torch.Tensor], dtype: Optional[torch.dtype]):
-    """Move all tensors to CUDA and cast if dtype is provided."""
+    """Move tensors to CUDA and cast only floating tensors to the target dtype."""
     for k in list(src_input.keys()):
         v = src_input[k]
         if isinstance(v, torch.Tensor):
             v = v.cuda(non_blocking=True)
-            if dtype is not None:
+            if dtype is not None and torch.is_floating_point(v):
                 v = v.to(dtype)
             src_input[k] = v
     return src_input
-
 
 def train_one_epoch(args, model, data_loader, optimizer, epoch):
     model.train()
@@ -339,7 +338,14 @@ def train_one_epoch(args, model, data_loader, optimizer, epoch):
     header, print_freq = f'Epoch: [{epoch}/{args.epochs}]', 10
     optimizer.zero_grad()
 
-    target_dtype = None  # DS handles bf16 internally
+    # choose input dtype based on args.dtype to match DS model weights
+    dtype_flag = str(getattr(args, 'dtype', '')).lower()
+    if dtype_flag in ('bf16', 'bfloat16'):
+        target_dtype = torch.bfloat16
+    elif dtype_flag in ('fp16', 'float16', 'half'):
+        target_dtype = torch.float16
+    else:
+        target_dtype = None  # fp32 inputs
 
     for step, (src_input, tgt_input) in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
         src_input = _maybe_cast_and_move(src_input, target_dtype)
@@ -378,15 +384,24 @@ def train_one_epoch(args, model, data_loader, optimizer, epoch):
     print("Averaged stats:", metric_logger)
     return {k: m.global_avg for k, m in metric_logger.meters.items()}
 
-
 def evaluate(args, data_loader, model, model_without_ddp, phase):
     model.eval()
     metric_logger = utils.MetricLogger(delimiter="  ")
 
+    # match input dtype to DS model weights
+    dtype_flag = str(getattr(args, 'dtype', '')).lower()
+    if dtype_flag in ('bf16', 'bfloat16'):
+        target_dtype = torch.bfloat16
+    elif dtype_flag in ('fp16', 'float16', 'half'):
+        target_dtype = torch.float16
+    else:
+        target_dtype = None
+
     with torch.no_grad():
         tgt_pres, tgt_refs = [], []
         for step, (src_input, tgt_input) in enumerate(metric_logger.log_every(data_loader, 10, f'Eval[{phase}]:')):
-            src_input = _maybe_cast_and_move(src_input, None)
+            src_input = _maybe_cast_and_move(src_input, target_dtype)
+
             stack_out = model(src_input, tgt_input)
             total_loss = stack_out['loss']
             metric_logger.update(loss=float(total_loss.item()))
@@ -402,7 +417,6 @@ def evaluate(args, data_loader, model, model_without_ddp, phase):
     metric_logger.meters['top1_acc_pi'].update(top1_acc_pi)
     metric_logger.meters['top1_acc_pc'].update(top1_acc_pc)
     return {k: m.global_avg for k, m in metric_logger.meters.items()}
-
 
 def main(args):
     utils.init_distributed_mode_ds(args)
