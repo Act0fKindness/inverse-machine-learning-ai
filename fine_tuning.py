@@ -259,50 +259,76 @@ class WLBSL_ISLR_Dataset(Dataset):
     @staticmethod
     def collate_fn(batch):
         src_list, tgt_list = zip(*batch)
-        poses = [b["pose"] for b in src_list]
-        lens  = torch.stack([b["pose_len"] for b in src_list], dim=0)
 
-        # Pad to [B, T, J, C]. Some pose sources may include extra feature
-        # dimensions (e.g., confidence or depth channels).  Flatten any
-        # additional dims beyond the joint dimension so downstream code
-        # always receives a 4-D tensor.
-        pad_pose = pad_sequence(poses, batch_first=True, padding_value=0.0)
-        B, max_len = pad_pose.shape[:2]
-        feat_shape = pad_pose.shape[2:]
-        if len(feat_shape) == 1:
-            J, C = feat_shape[0], 1
-            pad_pose = pad_pose.unsqueeze(-1)
+        # If raw poses are provided, process them as before.  Some callers may
+        # already provide split body/hand/face tensors in each sample.  Handle
+        # both cases so mismatched dataset outputs do not raise KeyErrors.
+        if "pose" in src_list[0]:
+            poses = [b["pose"] for b in src_list]
+            lens  = torch.stack([b["pose_len"] for b in src_list], dim=0)
+
+            # Pad to [B, T, J, C]. Some pose sources may include extra feature
+            # dimensions (e.g., confidence or depth channels).  Flatten any
+            # additional dims beyond the joint dimension so downstream code
+            # always receives a 4-D tensor.
+            pad_pose = pad_sequence(poses, batch_first=True, padding_value=0.0)
+            B, max_len = pad_pose.shape[:2]
+            feat_shape = pad_pose.shape[2:]
+            if len(feat_shape) == 1:
+                J, C = feat_shape[0], 1
+                pad_pose = pad_pose.unsqueeze(-1)
+            else:
+                J, C = feat_shape[0], int(np.prod(feat_shape[1:]))
+                pad_pose = pad_pose.reshape(B, max_len, J, C)
+
+            # Ensure last dimension represents (x, y, score).  Some pose sources
+            # only provide a subset of these features or include additional ones.
+            # Pad with zeros when fewer than 3 channels are present and truncate
+            # extras when more exist so downstream linear layers always receive
+            # exactly three inputs per joint.
+            if C < 3:
+                pad_pose = torch.nn.functional.pad(pad_pose, (0, 3 - C))
+                C = 3
+            elif C > 3:
+                pad_pose = pad_pose[..., :3]
+                C = 3
+
+            # Split joints into body/hand/face parts assuming fixed ordering
+            idx = 0
+            parts = {}
+            for name, n in [("body", 9), ("left", 21), ("right", 21), ("face_all", 18)]:
+                parts[name] = pad_pose[:, :, idx:idx + n, :]
+                idx += n
+
+            max_len = pad_pose.shape[1]
         else:
-            J, C = feat_shape[0], int(np.prod(feat_shape[1:]))
-            pad_pose = pad_pose.reshape(B, max_len, J, C)
+            # Samples already contain split parts; pad each independently.
+            lens = torch.stack([b["pose_len"] for b in src_list], dim=0)
+            parts = {}
+            for name in ("body", "left", "right", "face_all"):
+                part_tensors = [s[name] for s in src_list]
+                pad_part = pad_sequence(part_tensors, batch_first=True, padding_value=0.0)
+                if pad_part.ndim == 3:
+                    pad_part = pad_part.unsqueeze(-1)
+                elif pad_part.ndim > 4:
+                    B, T, J = pad_part.shape[:3]
+                    C = int(np.prod(pad_part.shape[3:]))
+                    pad_part = pad_part.reshape(B, T, J, C)
+                C = pad_part.shape[-1]
+                if C < 3:
+                    pad_part = torch.nn.functional.pad(pad_part, (0, 3 - C))
+                elif C > 3:
+                    pad_part = pad_part[..., :3]
+                parts[name] = pad_part
 
-        # Ensure last dimension represents (x, y, score).  Some pose sources
-        # only provide a subset of these features or include additional ones.
-        # Pad with zeros when fewer than 3 channels are present and truncate
-        # extras when more exist so downstream linear layers always receive
-        # exactly three inputs per joint.
-        if C < 3:
-            pad_pose = torch.nn.functional.pad(pad_pose, (0, 3 - C))
-            C = 3
-        elif C > 3:
-            pad_pose = pad_pose[..., :3]
-            C = 3
-
-        # Split joints into body/hand/face parts assuming fixed ordering
-        idx = 0
-        parts = {}
-        for name, n in [("body", 9), ("left", 21), ("right", 21), ("face_all", 18)]:
-            parts[name] = pad_pose[:, :, idx:idx + n, :]
-            idx += n
+            B, max_len = parts["body"].shape[:2]
 
         # Attention mask for valid timesteps
-        mask = torch.arange(max_len).expand(B, max_len) < lens.unsqueeze(1)
+        mask = torch.arange(max_len).expand(len(src_list), max_len) < lens.unsqueeze(1)
 
-        src_input = {
-            **parts,
-            "attention_mask": mask.long(),
-        }
-        tgt_input = {"gt_sentence": [b["gt_sentence"] for _, b in batch]}
+        src_input = {**parts, "attention_mask": mask.long()}
+        tgt_input = {"gt_sentence": [b["gt_sentence"] for b in tgt_list]}
+
         return src_input, tgt_input
 
 
