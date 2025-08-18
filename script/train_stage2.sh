@@ -6,7 +6,10 @@ python3 - <<'PY'
 import importlib.util, subprocess, sys
 if importlib.util.find_spec('distutils') is None:
     subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'setuptools'])
-req = ['torch', 'torchvision', 'torchaudio', 'timm', 'transformers', 'einops', 'deepspeed']
+# Base python packages required for stage-2 fine-tuning. ``mpi4py`` is
+# needed by DeepSpeed for its distributed initialisation even when using a
+# single GPU.
+req = ['torch', 'torchvision', 'torchaudio', 'timm', 'transformers', 'einops', 'deepspeed', 'mpi4py']
 missing = [r for r in req if importlib.util.find_spec(r) is None]
 if missing:
     subprocess.check_call([sys.executable, '-m', 'pip', 'install', *missing])
