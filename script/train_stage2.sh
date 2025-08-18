@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Ensure distutils is available (Python 3.12+ drops it)
+python3 - <<'PY'
+import importlib.util, subprocess, sys
+if importlib.util.find_spec('distutils') is None:
+    subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'setuptools'])
+req = ['torch', 'torchvision', 'torchaudio', 'timm', 'transformers', 'einops', 'deepspeed']
+missing = [r for r in req if importlib.util.find_spec(r) is None]
+if missing:
+    subprocess.check_call([sys.executable, '-m', 'pip', 'install', *missing])
+PY
+
 # Resolve repository root relative to this script
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -12,6 +23,11 @@ SAVE="${SAVE:-$ROOT/checkpoints/wlbs_stage2_words}"
 FINETUNE="${FINETUNE:-$ROOT/checkpoints/pretrain_wlbs/best.pt}"   # override if different
 
 mkdir -p "$SAVE"
+
+if [[ ! -f "$LABELS" ]]; then
+  echo "❌  Labels CSV not found at: $LABELS" >&2
+  exit 1
+fi
 
 ARGS=(
   --stage 2
