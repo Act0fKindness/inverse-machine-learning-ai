@@ -313,7 +313,7 @@ if __name__ == '__main__':
 
     # Only add NON-conflicting flags:
     parser.add_argument('--labels', dest='labels', type=str, required=True, help="CSV with video,pose,text")
-    parser.add_argument('--output_dir', type=str, required=True, help="Output directory")  # use canonical name
+    # Reuse existing --output_dir from base parser (utils.get_args_parser())
     parser.add_argument('--stage', type=int, default=2)  # accepted, not used for branching
     parser.add_argument('--device', default='cuda')      # accepted, not used
 
