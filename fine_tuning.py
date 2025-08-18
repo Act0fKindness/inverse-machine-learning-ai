@@ -255,7 +255,10 @@ def main(args):
     )
 
     model, optimizer, lr_scheduler = utils.init_deepspeed(args, model, optimizer, lr_scheduler)
-    model_without_ddp = model.module.module
+    if args.distributed:
+        model_without_ddp = model.module.module
+    else:
+        model_without_ddp = model.module
     print(optimizer)
 
     output_dir = Path(args.output_dir)
