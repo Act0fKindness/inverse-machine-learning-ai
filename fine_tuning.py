@@ -259,26 +259,48 @@ class WLBSL_ISLR_Dataset(Dataset):
     @staticmethod
     def collate_fn(batch):
         src_list, tgt_list = zip(*batch)
+        poses = [b["pose"] for b in src_list]
+        lens  = torch.stack([b["pose_len"] for b in src_list], dim=0)
 
-        # Collect per-part
-        parts = {k: [b[k] for b in src_list] for k in ("body", "left", "right", "face_all")}
-        # Pad each part on T
-        parts_padded = {k: WLBSL_ISLR_Dataset._pad_4d_list(v) for k, v in parts.items()}
+        # Pad to [B, T, J, C]. Some pose sources may include extra feature
+        # dimensions (e.g., confidence or depth channels).  Flatten any
+        # additional dims beyond the joint dimension so downstream code
+        # always receives a 4-D tensor.
+        pad_pose = pad_sequence(poses, batch_first=True, padding_value=0.0)
+        B, max_len = pad_pose.shape[:2]
+        feat_shape = pad_pose.shape[2:]
+        if len(feat_shape) == 1:
+            J, C = feat_shape[0], 1
+            pad_pose = pad_pose.unsqueeze(-1)
+        else:
+            J, C = feat_shape[0], int(np.prod(feat_shape[1:]))
+            pad_pose = pad_pose.reshape(B, max_len, J, C)
 
-        # Build attention mask by the **max** T across parts (they should match; if not, max is safe)
-        B, T_max = parts_padded["body"].shape[:2]
-        # verify other parts' T
-        T_max = max(T_max, *(t.shape[1] for t in parts_padded.values()))
-        mask = torch.arange(T_max).expand(B, T_max)
-        # compute lengths from body; fallback to max per-sample
-        lens = torch.stack([b["pose_len"] for b in src_list], dim=0)
-        lens = lens.clamp_max(T_max)
-        attention_mask = (mask < lens.unsqueeze(1)).long()
+        # Ensure last dimension represents (x, y, score).  Some pose sources
+        # only provide a subset of these features or include additional ones.
+        # Pad with zeros when fewer than 3 channels are present and truncate
+        # extras when more exist so downstream linear layers always receive
+        # exactly three inputs per joint.
+        if C < 3:
+            pad_pose = torch.nn.functional.pad(pad_pose, (0, 3 - C))
+            C = 3
+        elif C > 3:
+            pad_pose = pad_pose[..., :3]
+            C = 3
 
-        # If some parts have smaller T, extend tensors to T_max (already done above)
+        # Split joints into body/hand/face parts assuming fixed ordering
+        idx = 0
+        parts = {}
+        for name, n in [("body", 9), ("left", 21), ("right", 21), ("face_all", 18)]:
+            parts[name] = pad_pose[:, :, idx:idx + n, :]
+            idx += n
+
+        # Attention mask for valid timesteps
+        mask = torch.arange(max_len).expand(B, max_len) < lens.unsqueeze(1)
+
         src_input = {
-            **parts_padded,
-            "attention_mask": attention_mask,
+            **parts,
+            "attention_mask": mask.long(),
         }
         tgt_input = {"gt_sentence": [b["gt_sentence"] for _, b in batch]}
         return src_input, tgt_input
@@ -452,15 +474,10 @@ def main(args):
     )
 
     model, optimizer, lr_scheduler = utils.init_deepspeed(args, model, optimizer, lr_scheduler)
-
-    try:
+    if args.distributed:
         model_without_ddp = model.module.module
-    except Exception:
-        try:
-            model_without_ddp = model.module
-        except Exception:
-            model_without_ddp = model
-
+    else:
+        model_without_ddp = model.module
     print(optimizer)
 
     output_dir = Path(args.output_dir)
