@@ -24,66 +24,176 @@ from config import *  # keeps your train_label_paths/dev/test, etc.
 
 
 # ---------------------------
-# Minimal WLBSL ISLR dataset
+# Pose loading utilities
 # ---------------------------
 
-def _load_pose_tensor(pkl_path: str) -> torch.Tensor:
-    """Load a pickle pose file into a float32 torch.Tensor of shape [T, J, C]."""
+def _to_TJC(arr: np.ndarray) -> np.ndarray:
+    """
+    Convert various pose encodings to [T, J, C] where C in {2,3}.
+    Accepts shapes like:
+      [T, J, C] (already good),
+      [T, D]    (flattened J*C),
+      [T, J, C, 1] or [1, T, J, C].
+    """
+    a = np.asarray(arr)
+    if a.ndim == 3:
+        # [T,J,C] typical
+        T, J, C = a.shape
+        if C not in (1, 2, 3):
+            # Sometimes last dim is multiple subfeatures; flatten them into channels
+            a = a.reshape(T, J, -1)
+        return a.astype(np.float32)
+
+    if a.ndim == 2:
+        # [T, D] → try 3 then 2 channels
+        T, D = a.shape
+        if D % 3 == 0:
+            J, C = D // 3, 3
+        elif D % 2 == 0:
+            J, C = D // 2, 2
+        else:
+            # Fallback: treat as 1 channel with J=D
+            J, C = D, 1
+        return a.reshape(T, J, C).astype(np.float32)
+
+    if a.ndim == 4:
+        # Common encodings like [T, J, C, 1] or [1, T, J, C]
+        if a.shape[-1] == 1:
+            a = a[..., 0]
+            return _to_TJC(a)
+        if a.shape[0] == 1:
+            a = a[0]
+            return _to_TJC(a)
+
+    # Last resort: flatten into [T, J, C=1]
+    if a.ndim >= 2:
+        T = a.shape[0]
+        rest = int(np.prod(a.shape[1:]))
+        return a.reshape(T, rest, 1).astype(np.float32)
+
+    raise ValueError(f"Unsupported pose array shape: {a.shape}")
+
+
+def _split_single_pose_to_parts(tjc: np.ndarray) -> Dict[str, np.ndarray]:
+    """
+    Split a single [T, J, C] tensor into parts, assuming **contiguous ordering**:
+      (body, left hand, right hand, face)
+    Supports:
+      - WholeBody (133): 23, 21, 21, 68
+      - Compact   ( 69):  9, 21, 21, 18
+    If J doesn't match exactly, we try to allocate the remainder to face.
+    """
+    T, J, C = tjc.shape
+    schemes = [
+        ("wholebody133", (23, 21, 21, 68)),
+        ("compact69",    ( 9, 21, 21, 18)),
+    ]
+    for _, (b, l, r, f) in schemes:
+        if b + l + r + f == J:
+            idx = 0
+            parts = {
+                "body":     tjc[:, idx:idx+b, :]; idx += b,
+            "left":     tjc[:, idx:idx+l, :]; idx += l,
+            "right":    tjc[:, idx:idx+r, :]; idx += r,
+            "face_all": tjc[:, idx:idx+f, :],
+            }
+            return parts
+
+    # Fallback: use common body+hands, remainder to face
+    for b_try in (23, 9):
+        l_try = r_try = 21
+        if J >= b_try + l_try + r_try:
+            idx = 0
+            body  = tjc[:, idx:idx+b_try, :]; idx += b_try
+            left  = tjc[:, idx:idx+l_try, :]; idx += l_try
+            right = tjc[:, idx:idx+r_try, :]; idx += r_try
+            face  = tjc[:, idx:, :]
+            return {"body": body, "left": left, "right": right, "face_all": face}
+
+    raise RuntimeError(
+        f"Cannot split J={J} joints into parts. "
+        f"Expected 23+21+21+68 or 9+21+21+18; got {J}."
+    )
+
+
+def _load_pose_parts(pkl_path: str) -> Dict[str, torch.Tensor]:
+    """
+    Load a pose PKL and return dict with keys: body, left, right, face_all.
+    Each value is a float32 torch.Tensor of shape [T, V, C] with C in {2,3}.
+    """
     with open(pkl_path, "rb") as f:
         obj = pickle.load(f)
 
+    # Case 1: already per-part dict
+    if isinstance(obj, dict) and all(k in obj for k in ("body", "left", "right", "face_all")):
+        out = {}
+        for k in ("body", "left", "right", "face_all"):
+            tjc = _to_TJC(np.asarray(obj[k]))
+            # Pad to C=3 (x,y,score) if needed
+            if tjc.shape[-1] == 2:
+                pad = np.zeros((tjc.shape[0], tjc.shape[1], 1), dtype=tjc.dtype)
+                tjc = np.concatenate([tjc, pad], axis=-1)
+            out[k] = torch.tensor(tjc, dtype=torch.float32)
+        return out
+
+    # Case 2: single array under common keys
     if isinstance(obj, dict):
         for key in ("keypoints", "pose", "kpts", "skeleton", "data"):
             if key in obj:
-                arr = np.asarray(obj[key])
-                break
-        else:
-            arr = None
-            for v in obj.values():
-                try:
-                    arr = np.asarray(v)
-                    break
-                except Exception:
-                    pass
-            if arr is None:
-                raise ValueError(f"Unsupported PKL structure: {pkl_path}")
-    else:
-        arr = np.asarray(obj)
+                tjc = _to_TJC(np.asarray(obj[key]))
+                parts = _split_single_pose_to_parts(tjc)
+                out = {}
+                for k, a in parts.items():
+                    if a.shape[-1] == 2:
+                        pad = np.zeros((a.shape[0], a.shape[1], 1), dtype=a.dtype)
+                        a = np.concatenate([a, pad], axis=-1)
+                    out[k] = torch.tensor(a, dtype=torch.float32)
+                return out
 
-    # Normalize to [T, J, C]
-    if arr.ndim == 2:  # [T, D] → [T, J, C]
-        T, D = arr.shape
-        if D % 3 == 0:
-            arr = arr.reshape(T, D // 3, 3)
-        elif D % 2 == 0:
-            arr = arr.reshape(T, D // 2, 2)
-        else:
-            arr = arr.reshape(T, D, 1)
-    elif arr.ndim == 3:
-        # Already [T, J, C]
-        pass
-    elif arr.ndim == 4:
-        # Common encodings like [T, J, C, 1] or [1, T, J, C]
-        if arr.shape[-1] == 1:
-            arr = arr[..., 0]
-        elif arr.shape[0] == 1:
-            arr = arr[0]
-        else:
-            arr = arr.reshape(arr.shape[0], arr.shape[1], -1)  # fallback
-    else:
-        raise ValueError(f"Unsupported pose shape {arr.shape} in {pkl_path}")
+        # Otherwise try any 1st array-like value
+        for v in obj.values():
+            try:
+                tjc = _to_TJC(np.asarray(v))
+                parts = _split_single_pose_to_parts(tjc)
+                out = {}
+                for k, a in parts.items():
+                    if a.shape[-1] == 2:
+                        pad = np.zeros((a.shape[0], a.shape[1], 1), dtype=a.dtype)
+                        a = np.concatenate([a, pad], axis=-1)
+                    out[k] = torch.tensor(a, dtype=torch.float32)
+                return out
+            except Exception:
+                pass
 
-    return torch.tensor(arr, dtype=torch.float32)
+        raise ValueError(f"Unsupported PKL dict structure in {pkl_path}")
+
+    # Case 3: raw array
+    tjc = _to_TJC(np.asarray(obj))
+    parts = _split_single_pose_to_parts(tjc)
+    out = {}
+    for k, a in parts.items():
+        if a.shape[-1] == 2:
+            pad = np.zeros((a.shape[0], a.shape[1], 1), dtype=a.dtype)
+            a = np.concatenate([a, pad], axis=-1)
+        out[k] = torch.tensor(a, dtype=torch.float32)
+    return out
 
 
 def _hash_bucket(s: str) -> int:
     return (abs(hash(s)) % 10_000) % 100  # 0..99
 
 
+# ---------------------------
+# WLBSL ISLR dataset
+# ---------------------------
+
 class WLBSL_ISLR_Dataset(Dataset):
     """
     Reads a single CSV (video,pose,text) and splits deterministically:
       train 0-89, dev 90-94, test 95-99 by hashing the video path.
+    The 'pose' PKL can be either:
+      - dict with parts: {body,left,right,face_all} each [T,V,C]
+      - single array [T,J,C] or [T,J*C] which will be split.
     """
     def __init__(self, csv_path: str | Path, phase: str):
         self.phase = phase
@@ -120,89 +230,57 @@ class WLBSL_ISLR_Dataset(Dataset):
 
     def __getitem__(self, idx: int):
         it = self.items[idx]
-        pose = _load_pose_tensor(it["pose"])  # [T, J, C]
-        T = pose.shape[0]
+        parts = _load_pose_parts(it["pose"])  # dict of [T,V,C] float32
+        # Use body length as canonical T if available, else max across parts
+        Ts = {k: v.shape[0] for k, v in parts.items()}
+        T = Ts.get("body", max(Ts.values()))
         src_input = {
-            "pose": pose,                       # [T, J, C] float32
-            "pose_len": torch.tensor(T).long(), # scalar
+            **parts,  # body,left,right,face_all
+            "pose_len": torch.tensor(T).long(),
         }
-        tgt_input = {
-            "gt_sentence": it["text"],          # string label
-        }
+        tgt_input = {"gt_sentence": it["text"]}
         return src_input, tgt_input
 
     @staticmethod
-    def _split_parts_tensor(pad_pose: torch.Tensor) -> Dict[str, torch.Tensor]:
+    def _pad_4d_list(x_list: List[torch.Tensor]) -> torch.Tensor:
         """
-        Split [B, T, J, C] into parts for (body, left, right, face_all).
-        Supports common layouts:
-          - WholeBody (133): 23 body, 21 left, 21 right, 68 face
-          - Compact (69):     9 body, 21 left, 21 right, 18 face
+        Pad a list of [T,V,C] to [B, T_max, V, C] (pad T only, assume V,C consistent across batch).
         """
-        B, T, J, C = pad_pose.shape
-
-        schemes = [
-            ("wholebody133", (23, 21, 21, 68)),
-            ("compact69",    ( 9, 21, 21, 18)),
-        ]
-        chosen = None
-        for _, (b, l, r, f) in schemes:
-            if b + l + r + f == J:
-                chosen = (b, l, r, f)
-                break
-
-        if chosen is None:
-            # If not exact, try to map body/hand/hand and put the rest to face
-            # using the most common prefix counts
-            for b_try in (23, 9):
-                l_try, r_try = 21, 21
-                if J >= b_try + l_try + r_try:
-                    f_try = J - (b_try + l_try + r_try)
-                    chosen = (b_try, l_try, r_try, f_try)
-                    break
-
-        if chosen is None:
-            raise RuntimeError(
-                f"Cannot split J={J} joints into parts. "
-                f"Expected one of: 23+21+21+68 or 9+21+21+18 (or larger face remainder)."
-            )
-
-        bN, lN, rN, fN = chosen
-        idx = 0
-        parts = {}
-        parts["body"]     = pad_pose[:, :, idx:idx + bN, :]; idx += bN
-        parts["left"]     = pad_pose[:, :, idx:idx + lN, :]; idx += lN
-        parts["right"]    = pad_pose[:, :, idx:idx + rN, :]; idx += rN
-        parts["face_all"] = pad_pose[:, :, idx:idx + fN, :]; idx += fN
-        return parts
+        T_max = max(x.shape[0] for x in x_list)
+        V = x_list[0].shape[1]
+        C = x_list[0].shape[2]
+        B = len(x_list)
+        out = x_list[0].new_zeros((B, T_max, V, C))
+        for i, x in enumerate(x_list):
+            t = x.shape[0]
+            out[i, :t] = x
+        return out
 
     @staticmethod
     def collate_fn(batch):
         src_list, tgt_list = zip(*batch)
-        poses = [b["pose"] for b in src_list]
-        lens  = torch.stack([b["pose_len"] for b in src_list], dim=0)
 
-        # Pad to [B, T, J, C]. If extra trailing dims, flatten to channel.
-        pad_pose = pad_sequence(poses, batch_first=True, padding_value=0.0)
-        B, max_len = pad_pose.shape[:2]
-        feat_shape = pad_pose.shape[2:]
-        if len(feat_shape) == 1:
-            J, C = feat_shape[0], 1
-            pad_pose = pad_pose.unsqueeze(-1)
-        else:
-            J, C = feat_shape[0], int(np.prod(feat_shape[1:]))
-            pad_pose = pad_pose.reshape(B, max_len, J, C)
+        # Collect per-part
+        parts = {k: [b[k] for b in src_list] for k in ("body", "left", "right", "face_all")}
+        # Pad each part on T
+        parts_padded = {k: WLBSL_ISLR_Dataset._pad_4d_list(v) for k, v in parts.items()}
 
-        parts = WLBSL_ISLR_Dataset._split_parts_tensor(pad_pose)
+        # Build attention mask by the **max** T across parts (they should match; if not, max is safe)
+        B, T_max = parts_padded["body"].shape[:2]
+        # verify other parts' T
+        T_max = max(T_max, *(t.shape[1] for t in parts_padded.values()))
+        mask = torch.arange(T_max).expand(B, T_max)
+        # compute lengths from body; fallback to max per-sample
+        lens = torch.stack([b["pose_len"] for b in src_list], dim=0)
+        lens = lens.clamp_max(T_max)
+        attention_mask = (mask < lens.unsqueeze(1)).long()
 
-        # Attention mask for valid timesteps
-        mask = torch.arange(max_len).expand(B, max_len) < lens.unsqueeze(1)
-
+        # If some parts have smaller T, extend tensors to T_max (already done above)
         src_input = {
-            **parts,
-            "attention_mask": mask.long(),
+            **parts_padded,
+            "attention_mask": attention_mask,
         }
-        tgt_input = {"gt_sentence": [b["gt_sentence"] for b in tgt_list]}
+        tgt_input = {"gt_sentence": [b["gt_sentence"] for _, b in batch]}
         return src_input, tgt_input
 
 
@@ -261,19 +339,16 @@ def train_one_epoch(args, model, data_loader, optimizer, epoch):
     header, print_freq = f'Epoch: [{epoch}/{args.epochs}]', 10
     optimizer.zero_grad()
 
-    # If DeepSpeed bf16/fp16 is enabled the engine will handle casting; keep inputs fp32 unless specified
-    target_dtype = None
+    target_dtype = None  # DS handles bf16 internally
 
     for step, (src_input, tgt_input) in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
         src_input = _maybe_cast_and_move(src_input, target_dtype)
 
-        # Optional probing
         if getattr(args, "probe_shapes", False) and step == 0 and utils.is_main_process():
             print("== Incoming src_input shapes ==")
             for k, v in src_input.items():
                 if isinstance(v, torch.Tensor):
                     print(f"  {k}: {tuple(v.shape)} {v.dtype} {v.device}", flush=True)
-            # Clean shutdown (avoids NCCL warning)
             import torch.distributed as dist
             if dist.is_available() and dist.is_initialized():
                 dist.destroy_process_group()
@@ -282,7 +357,6 @@ def train_one_epoch(args, model, data_loader, optimizer, epoch):
         stack_out = model(src_input, tgt_input)
         total_loss = stack_out['loss']
 
-        # One-pass forward only probe
         if getattr(args, "probe_forward", False) and step == 0:
             import torch.distributed as dist
             if dist.is_available() and dist.is_initialized():
@@ -313,13 +387,11 @@ def evaluate(args, data_loader, model, model_without_ddp, phase):
         tgt_pres, tgt_refs = [], []
         for step, (src_input, tgt_input) in enumerate(metric_logger.log_every(data_loader, 10, f'Eval[{phase}]:')):
             src_input = _maybe_cast_and_move(src_input, None)
-
             stack_out = model(src_input, tgt_input)
             total_loss = stack_out['loss']
             metric_logger.update(loss=float(total_loss.item()))
 
             output = model_without_ddp.generate(stack_out, max_new_tokens=50, num_beams=1)
-            # Convert generated token ids to strings if needed
             if isinstance(output, torch.Tensor):
                 output = output.cpu().tolist()
             for i in range(len(output)):
@@ -343,10 +415,8 @@ def main(args):
 
     print("Creating model:")
     model = Uni_Sign(args=args).cuda().train()
-    # Ensure fp32 master params pre-DS init
     for _, p in model.named_parameters():
-        if p.requires_grad:
-            p.data = p.data.to(torch.float32)
+        if p.requires_grad: p.data = p.data.to(torch.float32)
 
     if args.finetune:
         print('***********************************\nLoad Checkpoint...\n***********************************')
@@ -356,9 +426,6 @@ def main(args):
         print('Missing keys:\n', '\n'.join(ret.missing_keys))
         print('Unexpected keys:\n', '\n'.join(ret.unexpected_keys))
 
-    model_without_ddp = model
-
-    # NOTE: DeepSpeed wrapping happens in utils.init_deepspeed
     n_parameters = utils.count_parameters_in_MB(model)
     print(f'number of params: {n_parameters}M')
 
@@ -370,18 +437,15 @@ def main(args):
         num_training_steps=int(args.epochs * len(train_loader) / max(1, args.gradient_accumulation_steps)),
     )
 
-    # DeepSpeed initialize (returns engine-wrapped model, opt, sched)
     model, optimizer, lr_scheduler = utils.init_deepspeed(args, model, optimizer, lr_scheduler)
 
-    # Resolve the underlying module for generation/saving
     try:
-        # deepspeed.DeepSpeedEngine has .module (the DDP-wrapped model), which itself has .module (the raw nn.Module)
         model_without_ddp = model.module.module
     except Exception:
         try:
             model_without_ddp = model.module
         except Exception:
-            model_without_ddp = model  # fallback
+            model_without_ddp = model
 
     print(optimizer)
 
@@ -402,16 +466,15 @@ def main(args):
         for epoch in range(args.epochs):
             if args.distributed:
                 s = getattr(train_loader, "sampler", None)
-                if hasattr(s, "set_epoch"):
-                    s.set_epoch(epoch)
+                if hasattr(s, "set_epoch"): s.set_epoch(epoch)
 
             train_stats = train_one_epoch(args, model, train_loader, optimizer, epoch)
 
-            # Save checkpoint (only trainable params)
+            # Save checkpoint
             ckpt_path = output_dir / f'checkpoint_{epoch}.pth'
             utils.save_on_master({'model': get_requires_grad_dict(model_without_ddp)}, ckpt_path)
 
-            # Eval on dev/test (master only)
+            # Eval
             if utils.is_main_process():
                 dev_stats  = evaluate(args, dev_loader,  model, model_without_ddp, 'dev')
                 test_stats = evaluate(args, test_loader, model, model_without_ddp, 'test')
@@ -432,9 +495,7 @@ def main(args):
                 }
                 with (output_dir / "log.txt").open("a") as f:
                     f.write(json.dumps(log_stats) + "\n")
-
     finally:
-        # Always clean up distributed to avoid NCCL warnings on exceptions/early exit
         import torch.distributed as dist
         if dist.is_available() and dist.is_initialized():
             dist.destroy_process_group()
@@ -446,13 +507,10 @@ def main(args):
 if __name__ == '__main__':
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-    # Base parser from utils (keeps deepspeed/optim args and existing flags)
     parser = argparse.ArgumentParser('Uni-Sign scripts', parents=[utils.get_args_parser()])
-
-    # Non-conflicting additions for this stage
     parser.add_argument('--labels', dest='labels', type=str, required=True, help="CSV with video,pose,text")
-    parser.add_argument('--stage', type=int, default=2)   # accepted, not used for branching
-    parser.add_argument('--device', default='cuda')       # accepted, not used
+    parser.add_argument('--stage', type=int, default=2)
+    parser.add_argument('--device', default='cuda')
 
     # Probing aids
     parser.add_argument('--probe-shapes', action='store_true',
