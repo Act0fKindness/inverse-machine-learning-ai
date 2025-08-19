@@ -34,8 +34,6 @@ fi
 
 ARGS=(
   --stage 2
-  --task ISLR
-  --dataset WLASL
   --labels     "$LABELS"
   --output_dir "$SAVE"
   --device    cuda
